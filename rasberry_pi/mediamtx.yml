@@ -1,0 +1,16 @@
+paths:
+  cam1: #영상패킷을 받는 경로
+    source: udp://${RASPBERRY_PI_MPEG_TS_IP}:5000 # 젯슨에서 오는 로컬ip
+    sourceOnDemand: yes # 요청이 오는 경우만 영상을 받음.
+
+webrtc: yes # webrtc 활성화
+webrtcAddress: :8889 # webrtc 포트
+webrtcAdditionalHosts: ["${RASPBERRY_PI_WEBRTC_IP}"] # webrtc로 스트리밍가능한 호스트(중계)  가상 ip
+
+# 전부다 인바운드 5000,8889,8189
+
+ 
+rtsp: no  # 사용하지 않는 프로토콜 비활성화(요구 포트도 닫아버림)
+rtmp: no
+hls: no
+srt: no

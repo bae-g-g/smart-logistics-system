@@ -1,0 +1,122 @@
+# =============================================================================
+# docker-compose.yml — Gateway
+# =============================================================================
+# 아키텍처:  tailscale 컨테이너가 "(Router)" 역할.
+#           모든 서비스는 network_mode: service:tailscale.
+#           → 모든 서비스가 localhost로 서로 통신.
+#           → 모든 포트는 tailscale 컨테이너에서만 개방.
+#           → tailscale 컨테이너에서 라우팅 테이블을 설정하여
+#             로컬망 트래픽은 실제 lan카드로, 가상ip 트래픽은 가상랜카드로 분리.
+# =============================================================================
+
+services:
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  #  tailscale (Gateway Router)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 기능:
+  #   1. VPN 터널(tun0)을 통해 100.x.x.x 대역 통신 제공
+  #   2. Docker 브리지(eth0)를 통해 192.168.x.x LAN 통신 유지
+  #   3. 모든 서비스의 포트를 호스트에서 바인딩 
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: ${TS_HOSTNAME}
+    cap_add:
+      - NET_ADMIN # 네트워크 인터페이스, 라우팅 테이블 등을 수정할 수 있는 어드민 권한
+      - SYS_MODULE # 커널 모듈(lan)을 로드,언로드할 수 있는 권한
+    volumes:
+      - tailscale-state:/var/lib/tailscale # 테일스케일 상태
+      - /dev/net/tun:/dev/net/tun # 가상 lan 카드 
+      - ./routing.sh:/routing.sh:ro # 스크립트
+    env_file:
+      # routing.sh의 변수로 사용되는 정보는 .env에서 가져옴
+      - .env
+    entrypoint: [ "/bin/sh", "/routing.sh" ] # <- bin/sh로 routing.sh을 최우선 실행
+    ports:
+      #인바운드 포트
+      - "1883:1883"
+      - "5000:5000/udp"
+      - "8889:8889"
+      - "8189:8189/udp"
+    restart: always
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 📡 mqtt-broker (Mosquitto)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 로컬 엣지 디바이스 간 MQTT 통신 브로커.
+  # network_mode: service:tailscale → tailscale과 네트워크 네임스페이스 공유.
+  # → app에서 localhost:1883 으로 접근 가능.
+  # → 외부에서는 호스트IP:1883 → tailscale 컨테이너 → localhost:1883 → mosquitto
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto_broker
+    network_mode: service:tailscale # tailscale가 제공하는 가상 네트워크를 사용한다.
+    depends_on:
+      - tailscale
+    volumes:
+      - ./certs/passwd:/mosquitto/config/passwd # 로컬 연결간 인증
+      - ./certs/mosquitto.conf:/mosquitto/config/mosquitto.conf # 로컬 브로커 설정
+    restart: always
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 🎥 mediamtx (영상 스트리밍 중계)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # Jetson → (MPEG-TS/UDP:5000) → mediamtx → (WebRTC:8889) → Web Client
+  # VPN IP(100.x.x.x)로 WebRTC 스트리밍, LAN에서 UDP 수신 모두 가능.
+  # 로컬ip -> 192.168.x.x:5000 으로 영상 수신 -> tailscale 컨테이너 -> localhost:5000 -> mediamtx(중계) -> 웹브라우저
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: stream-relay
+    network_mode: service:tailscale # ← 가상 네트워크에 종속
+    depends_on:
+      - tailscale
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml # 중계 설정
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # ⚙️ app (메인 비즈니스 로직)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 컨베이어 제어 + MQTT 게이트웨이 (로컬 ↔ 서버).
+  # privileged: true → GPIO/I2C 하드웨어 디바이스 접근 필수.
+  # network_mode: service:tailscale 이므로
+  #   - 로컬 MQTT: localhost:1883
+  #   - 서버 MQTT: 100.x.x.x:8883 (tun0 경유)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: app
+    network_mode: service:tailscale # ← 가상 네트워크에 종속
+    privileged: true # GPIO/I2C등 하드웨어에 접근
+    depends_on:
+      - tailscale
+      - mqtt-broker
+    tty: true # 터미널 모드
+    stdin_open: true # 표준 입력 열기
+    volumes:
+      - ./certs:/certs
+      - ./app:/app
+    devices:
+      - "/dev/i2c-1:/dev/i2c-1" # 모터 드라이버와 통신을 위해
+      - "/dev/gpiomem:/dev/gpiomem" # 센서 입력을 받기 위해
+      - "/dev/video0:/dev/video0" # 카메라 연결을 위해
+    environment:
+      - QT_QPA_PLATFORM=offscreen # gui X
+    env_file:
+      - .env
+    restart: always
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 볼륨 정의
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+volumes:
+  tailscale-state: # Tailscale 인증 상태 저장  (재시작 시 재인증 불필요)

@@ -1,0 +1,5 @@
+rpi-lgpio
+paho-mqtt
+smbus
+opencv-python
+python-dotenv

@@ -1,0 +1,18 @@
+# MQTT Data and Logs
+data/
+log/
+
+# Private keys and certificates (keep only examples)
+certs/*.key
+certs/*.crt
+certs/*.csr
+certs/*.srl
+certs/*.cnf
+
+# Password file (contains sensitive data)
+config/passwd
+
+# Keep placeholder files
+!certs/.gitkeep
+!data/.gitkeep
+!log/.gitkeep
