@@ -426,7 +426,11 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
 
 ## 📂 리포지토리 구조 (Repository Context)
 
-본 리포지토리에는 제가 담당한 **통신 및 제어 코드**만 저장되어 있습니다.
+본 리포지토리에는 제가 담당한 **네트워크, 통신 및 제어 코드**만 저장되어 있습니다.
+
+<details>
+<summary> 📂 리포지토리 구조 (Repository Context) </summary>
+
 
 ```bash
 프로젝트 디렉토리
@@ -475,3 +479,6 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
     ┗ 📜 .env                     # 환경 변수 설정
 
 ```
+
+
+</details>
