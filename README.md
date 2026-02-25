@@ -353,9 +353,9 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
 `threading.Event` 기반의 비동기 아키텍처를 적용하여 벨트 구동과 센서 감지를 병렬 처리. GPIO 인터럽트 콜백으로 실시간 박스 감지 후 이벤트 플래그를 통해 모터 스레드에 정지 신호를 전달함.
 
 
-### 하드웨어 제어 구조
+### GPIO
 
-``
+```
  Raspi_MotorHAT (I2C: 0x6f)
  ┌───────────────────────────────────────────┐
  │  DC Motor (CH2)     Servo (CH0, CH1)      │
@@ -368,6 +368,7 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
           ▼                    ▼
      컨베이어 벨트          적재 서보암
 
+
  입출력
  ┌──────────────────────────────────────────────┐
  │  IR Sensor (PIN 17)    RGB LED (23,24,25)    │
@@ -377,7 +378,7 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
  │  │ Bounce: 200ms│      │ 🔵 촬영/적재 │      │
  │  └──────────────┘      └──────────────┘      │
  └──────────────────────────────────────────────┘
- 
+
 ```
 
 ### 공정 흐름 (상태 머신)
@@ -395,7 +396,7 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
   ③ 카메라 촬영 & 운송장 전송 ── 🔵 LED             │ check_reset()
          │                                         │
          ▼                                         ▼
-  ④ RC카 호출 → 주차 완료 대기         raise SystemReset(!)
+  ④ RC카 호출 → 주차 완료 대기             raise SystemReset(!)
          │                                         │
          ▼                                    ┌────┴────┐
   ⑤ 서보암 Push → 박스 적재 ── 🔴 LED          │ except  │
@@ -416,62 +417,7 @@ RC카 ◄────┤  토픽: factory_msg/+/+          ├──────
 - **GPIO 인터럽트 콜백**: `GPIO.add_event_detect(FALLING)`으로 IR센서 하강 에지 감지, `bouncetime=200ms`로 채터링 방지
 - **비상 정지**: `emergency_stop()` 호출 시 모터 즉시 해제 + 서보 원위치 복귀 + 상태 초기화
 - **자원 정리**: `cleanup()` 시 모터 해제 → 이벤트 플래그 설정 → LED 소등 → `GPIO.cleanup()` 순차 실행
-
-
-### 예외 처리 및 초기화 — 커스텀 Exception 기반 공정 리셋
-
-공정 중 서버로부터 **리셋 신호**가 들어오면, 공정의 어떤 단계에 있든 즉시 안전하게 중단하고 초기 상태로 복귀해야 합니다. 이를 위해 **커스텀 예외(`SystemReset`)를 활용한 체크포인트 패턴**을 직접 설계하였습니다.
-
-#### 설계 의도
-일반적인 플래그 기반 리셋(`if reset: return`)은 매 분기마다 조건문을 작성해야 하며, 중첩된 `while` 루프나 I/O 대기 블록 내부에서 깊게 감싸야 합니다. 
-커스텀 예외를 활용하면 **콜스택의 깊이와 무관하게** 한 번의 `raise`로 최상위 `try-except` 핸들러까지 즉시 탈출할 수 있어, 코드 복잡도를 낮추면서도 확실한 리셋을 보장합니다.
-
-
-#### 동작 메커니즘
-
-```python
-# ── 커스텀 예외 정의 ──
-class SystemReset(Exception):
-    pass
-
-# ── 체크포인트 함수: 공정 각 단계 사이에 삽입 ──
-def check_reset():
-    if state.reset:              # 서버가 MQTT로 전달한 리셋 플래그
-        raise SystemReset("리셋 신호 감지됨!")
-```
-
-```python
-def run_cycle():
-    try:
-        conveyer.belt_run_until_sensor()      # ① 벨트 가동
-        while not conveyer.box_detected_flag:
-            check_reset()          # ◄── 체크포인트
-            time.sleep(0.1)
-
-        camera.capture_jpeg()                  # ③ 촬영
-        check_reset()              # ◄── 체크포인트
-
-        while not state.parking_done:
-            check_reset()          # ◄── 체크포인트 (루프 내부)
-            local_network.send_command(...)
-
-        conveyer.push_box()                    # ⑤ 적재
-        check_reset()              # ◄── 체크포인트
-
-    except SystemReset:
-        # ── 예외 핸들러: 안전한 3단계 긴급 복구 ──
-        conveyer.emergency_stop()  # 1) 하드웨어 즉시 정지
-        state.reset_all()          # 2) 소프트웨어 상태 초기화
-        return                     # 3) 상위 루프(main)로 복귀
-```
-
-#### 3단계 긴급 복구 프로세스
-
-| 단계  | 호출                        | 동작                                                                                        |
-| :---: | :-------------------------- | :------------------------------------------------------------------------------------------ |
-| **1** | `conveyer.emergency_stop()` | DC모터 즉시 해제(`RELEASE`), 서보 원위치 복귀, `stop_event` 설정으로 워커 스레드 안전 종료  |
-| **2** | `state.reset_all()`         | `box_count`, `parking_done`, `destination`, `rc_car_id` 등 모든 공정 상태를 초기값으로 리셋 |
-| **3** | `return` → `main()` 루프    | `main()`의 `while True` 루프로 복귀하여 🟢 LED 대기 상태 진입, 다음 명령 수신 대기           |
+- **예외 처리** : 커스텀 예외(`SystemReset`)를 활용한 체크포인트 패턴, 매 단계별 동작마다 체크포인트 설정하여 콜스택 깊이와 무관하게 한 번의 `raise`로 최상위 `try-except` 핸들러까지 즉시 탈출
 
 
 
