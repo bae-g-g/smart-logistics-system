@@ -13,7 +13,6 @@
   - 🎥 미디어 스트리밍 — MPEG-TS → WebRTC 중계
   - 📟 Edge 미들웨어 — MQTT 게이트웨이
   - ⚙️ 컨베이어 벨트 제어 — I2C 모터 + GPIO 센서
-  - ⚠️ 예외 처리 및 초기화 — 커스텀 Exception 기반 공정 리셋
 - [🔧 Troubleshooting(docker pid1 문제)](#-트러블슈팅)
 - [📂 리포지토리 구조 (Repository Context)](#-리포지토리-구조-repository-context)
 
